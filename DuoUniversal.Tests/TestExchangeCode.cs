@@ -20,6 +20,8 @@ namespace DuoUniversal.Tests
         // Long enough to pass validation, so that a test using it reaches the comparison against the
         // nonce Duo echoed back rather than stopping at the length check
         private const string WRONG_NONCE = "a different nonce, also plausible";
+        // Short enough that ValidateNonce rejects it without any call to Duo
+        private const string TOO_SHORT_NONCE = "too short";
 
         [SetUp]
         public void Setup()
@@ -160,6 +162,44 @@ namespace DuoUniversal.Tests
             var client = MakeClient(new HttpResponder(HttpStatusCode.OK, new StringContent(GoodApiResponseWithSamlResponse())));
             var exception = Assert.ThrowsAsync<DuoException>(async () => await client.ExchangeAuthorizationCodeForSamlResponse(CODE, "not username"));
             Assert.That(exception.Message, Does.Contain("username does not match"));
+        }
+
+        // The next two tests pin down a subtlety of how the overloads above are put together.  The public
+        // overloads are not themselves async; they only hand off to a private async core, and the nonce is
+        // validated inside that core.  That means a bad nonce arrives as a faulted Task, which is what a
+        // caller of any Task-returning method expects.
+        //
+        // Moving ValidateNonce up into a public overload, to fail fast, would look harmless and would keep
+        // every other test in this file passing, but it would throw at the call site instead, before the
+        // caller ever holds a Task.  That breaks anyone who starts the exchange and awaits it later:
+        //
+        //     var task = client.ExchangeAuthorizationCodeFor2faResult(code, user, nonce);
+        //     DoSomeOtherWork();   // a synchronous throw escapes from the line above, not from here
+        //     var token = await task;
+        //
+        // It would equally break passing the call to Task.WhenAll.  Making the public overloads async again
+        // would also be a fix, since an async method captures such a throw into its Task; either way, this
+        // is the behaviour that has to hold.
+        [Test]
+        public void TestInvalidNonceFaultsTheTaskInsteadOfThrowingAtTheCallSite()
+        {
+            var client = MakeClient(new HttpResponder(HttpStatusCode.OK, new StringContent(GoodApiResponse(NONCE))));
+
+            Task<IdToken> task = null;
+            Assert.DoesNotThrow(() => task = client.ExchangeAuthorizationCodeFor2faResult(CODE, USERNAME, TOO_SHORT_NONCE),
+                                "The nonce was rejected at the call site instead of through the returned Task");
+            Assert.ThrowsAsync<DuoException>(async () => await task);
+        }
+
+        [Test]
+        public void TestInvalidNonceFaultsTheTaskInsteadOfThrowingAtTheCallSiteForSamlResponse()
+        {
+            var client = MakeClient(new HttpResponder(HttpStatusCode.OK, new StringContent(GoodApiResponseWithSamlResponse(NONCE))));
+
+            Task<string> task = null;
+            Assert.DoesNotThrow(() => task = client.ExchangeAuthorizationCodeForSamlResponse(CODE, USERNAME, TOO_SHORT_NONCE),
+                                "The nonce was rejected at the call site instead of through the returned Task");
+            Assert.ThrowsAsync<DuoException>(async () => await task);
         }
 
         private static string GoodApiResponse(string nonce = null)
