@@ -17,6 +17,9 @@ namespace DuoUniversal.Tests
     {
         private const string CODE = "code";
         private const string NONCE = "a nonce of a plausible length";
+        // Long enough to pass validation, so that a test using it reaches the comparison against the
+        // nonce Duo echoed back rather than stopping at the length check
+        private const string WRONG_NONCE = "a different nonce, also plausible";
 
         [SetUp]
         public void Setup()
@@ -89,14 +92,24 @@ namespace DuoUniversal.Tests
             Assert.AreEqual(NONCE, idToken.Nonce);
         }
 
+        // These are rejected by validation before any comparison happens, because they are not
+        // acceptable nonces in the first place
         [Test]
         [TestCase("not the nonce")]
         [TestCase("")]
         [TestCase(null)]
-        public void TestNonceMismatch(string expectedNonce)
+        public void TestUnusableNonceIsRejected(string expectedNonce)
         {
             var client = MakeClient(new HttpResponder(HttpStatusCode.OK, new StringContent(GoodApiResponse(NONCE))));
             Assert.ThrowsAsync<DuoException>(async () => await client.ExchangeAuthorizationCodeFor2faResult(CODE, USERNAME, expectedNonce));
+        }
+
+        [Test]
+        public void TestNonceMismatch()
+        {
+            var client = MakeClient(new HttpResponder(HttpStatusCode.OK, new StringContent(GoodApiResponse(NONCE))));
+            var exception = Assert.ThrowsAsync<DuoException>(async () => await client.ExchangeAuthorizationCodeFor2faResult(CODE, USERNAME, WRONG_NONCE));
+            Assert.That(exception.Message, Does.Contain("nonce does not match"));
         }
 
         [Test]
@@ -128,7 +141,25 @@ namespace DuoUniversal.Tests
         public void TestSamlResponseNonceMismatch()
         {
             var client = MakeClient(new HttpResponder(HttpStatusCode.OK, new StringContent(GoodApiResponseWithSamlResponse(NONCE))));
-            Assert.ThrowsAsync<DuoException>(async () => await client.ExchangeAuthorizationCodeForSamlResponse(CODE, USERNAME, "not the nonce"));
+            Assert.ThrowsAsync<DuoException>(async () => await client.ExchangeAuthorizationCodeForSamlResponse(CODE, USERNAME, WRONG_NONCE));
+        }
+
+        // The SAML flow should say what actually went wrong, the same as the Id Token flow does, rather
+        // than reporting a generic failure and leaving the reason in an inner exception
+        [Test]
+        public void TestSamlResponseNonceMismatchReportsTheNonce()
+        {
+            var client = MakeClient(new HttpResponder(HttpStatusCode.OK, new StringContent(GoodApiResponseWithSamlResponse(NONCE))));
+            var exception = Assert.ThrowsAsync<DuoException>(async () => await client.ExchangeAuthorizationCodeForSamlResponse(CODE, USERNAME, WRONG_NONCE));
+            Assert.That(exception.Message, Does.Contain("nonce does not match"));
+        }
+
+        [Test]
+        public void TestSamlResponseUsernameMismatchReportsTheUsername()
+        {
+            var client = MakeClient(new HttpResponder(HttpStatusCode.OK, new StringContent(GoodApiResponseWithSamlResponse())));
+            var exception = Assert.ThrowsAsync<DuoException>(async () => await client.ExchangeAuthorizationCodeForSamlResponse(CODE, "not username"));
+            Assert.That(exception.Message, Does.Contain("username does not match"));
         }
 
         private static string GoodApiResponse(string nonce = null)

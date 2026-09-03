@@ -214,11 +214,9 @@ namespace DuoUniversal
         /// <param name="duoCode">The one-time use code issued by Duo</param>
         /// <param name="username">The username expected to have authenticated with Duo</param>
         /// <returns>An IdToken authenticating the user and describing the authentication</returns>
-        public async Task<IdToken> ExchangeAuthorizationCodeFor2faResult(string duoCode, string username)
+        public Task<IdToken> ExchangeAuthorizationCodeFor2faResult(string duoCode, string username)
         {
-            TokenResponse tokenResponse = await ExchangeAuthorizationCodeResponse(duoCode);
-            return ValidateIdTokenFromResponse(tokenResponse, username);
-
+            return ExchangeAuthorizationCodeFor2faResult(duoCode, username, null, requireNonce: false);
         }
 
         /// <summary>
@@ -230,10 +228,28 @@ namespace DuoUniversal
         /// <param name="username">The username expected to have authenticated with Duo</param>
         /// <param name="nonce">The nonce sent to GenerateAuthUri for this authentication</param>
         /// <returns>An IdToken authenticating the user and describing the authentication</returns>
-        public async Task<IdToken> ExchangeAuthorizationCodeFor2faResult(string duoCode, string username, string nonce)
+        public Task<IdToken> ExchangeAuthorizationCodeFor2faResult(string duoCode, string username, string nonce)
         {
-            ValidateNonce(nonce);
+            return ExchangeAuthorizationCodeFor2faResult(duoCode, username, nonce, requireNonce: true);
+        }
+
+        /// <summary>
+        /// Exchange the authorization code for an Id Token, optionally checking a nonce
+        /// </summary>
+        /// <param name="duoCode">The one-time use code issued by Duo</param>
+        /// <param name="username">The username expected to have authenticated with Duo</param>
+        /// <param name="nonce">The nonce sent to GenerateAuthUri, or null if none was sent</param>
+        /// <param name="requireNonce">Whether the caller asked for a nonce, and so must supply a valid one</param>
+        /// <returns>An IdToken authenticating the user and describing the authentication</returns>
+        private async Task<IdToken> ExchangeAuthorizationCodeFor2faResult(string duoCode, string username, string nonce, bool requireNonce)
+        {
+            if (requireNonce)
+            {
+                ValidateNonce(nonce);
+            }
+
             TokenResponse tokenResponse = await ExchangeAuthorizationCodeResponse(duoCode);
+
             return ValidateIdTokenFromResponse(tokenResponse, username, nonce);
         }
 
@@ -277,21 +293,14 @@ namespace DuoUniversal
                 ValidateNonce(nonce);
             }
 
-            string samlResponse;
             TokenResponse tokenResponse = await ExchangeAuthorizationCodeResponse(duoCode);
 
-            try
-            {
-                // Calling this method to validate the token, before getting the samlResponse value
-                ValidateIdTokenFromResponse(tokenResponse, username, nonce);
-                samlResponse = tokenResponse.SamlResponse;
-            }
-            catch (Exception e)
-            {
-                throw new DuoException("Error while retrieveing saml response", e);
-            }
+            // Validate the token before handing back the SAML response.  Anything that goes wrong here
+            // is already a DuoException naming the cause, so let it propagate rather than reporting a
+            // generic failure and leaving the reason buried in an inner exception.
+            ValidateIdTokenFromResponse(tokenResponse, username, nonce);
 
-            return samlResponse;
+            return tokenResponse.SamlResponse;
         }
 
 
